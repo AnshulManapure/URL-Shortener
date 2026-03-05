@@ -2,7 +2,9 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, Float, String, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from pydantic import BaseModel
+from pydantic import BaseModel, AnyHttpUrl
+from typing import Optional
+import datetime
 
 Base = declarative_base()
 
@@ -46,7 +48,7 @@ class URL(Base):
     __tablename__ = "urls"
     id = Column(Integer, primary_key=True)
     original_url = Column(String, nullable=False)
-    short_code = Column(String, unique=True, nullable=False, index=True)
+    short_code = Column(String, unique=True, nullable=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     created_at = Column(DateTime, server_default=func.now())
     expires_at = Column(DateTime)
@@ -62,3 +64,15 @@ class Click(Base):
     user_agent = Column(String)
     ip_address = Column(String)
 
+
+#Define FastAPI models; Not Postgres tables
+#Used to validate data to/from the API; No data being stored in db
+class URLCreate(BaseModel):
+    original_url: AnyHttpUrl
+    expires_in_days: Optional[int] = None
+
+class URLResponse(BaseModel):
+    short_code: str
+    short_url: str
+    expires_at: Optional[datetime.datetime]
+    
