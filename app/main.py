@@ -1,11 +1,22 @@
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from jose import jwt 
 import datetime
+from dotenv import load_dotenv
+import os
 
 import models
 import database
 import utils
+import auth
+
+#Loading environment variables
+load_dotenv()
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
 
 app = FastAPI()
 
@@ -20,16 +31,32 @@ def get_db():
     finally:
         db.close_all()
 
+#Define a function to get user on every API call
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login") #Get bearer token from user request
+def get_current_user(token: str=Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    payload = jwt.decode(token=token, key=SECRET_KEY, algorithms=ALGORITHM)
+    user = db.query(models.User).filter(models.User.id == payload.get("sub")).first()
+
+    if not user:
+        raise HTTPException(401)
+    
+    return user
+
+
+
 #Create endpoint to send long url and get short url
 @app.post('/shorten', response_model=models.URLResponse)
-def create_short_url(payload: models.URLCreate, db: Session = Depends(get_db)):
-    new_url = models.URL(original_url = str(payload.original_url))
+def create_short_url(payload: models.URLCreate, request: Request, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    new_url = models.URL(original_url = str(payload.original_url),
+                         user_id = current_user.id)
     db.add(new_url)
     db.commit()
     db.refresh(new_url)
 
     short_code = utils.encode_base62(new_url.id)
     new_url.short_code = short_code
+
+    short_url = f"{request.base_url}{short_code}"
 
     if payload.expires_in_days:
         new_url.expires_at = datetime.datetime.now() + datetime.timedelta(days=payload.expires_in_days)
@@ -38,11 +65,12 @@ def create_short_url(payload: models.URLCreate, db: Session = Depends(get_db)):
     
     return {
         "short_code": short_code,
-        "short_url": f"http://localhost:8000/{short_code}",
+        "short_url": short_url,
         "expires_at": new_url.expires_at
     }
 
 
+#Endpoint to redirect
 @app.get('/{short_code}')
 def redirect(short_code: str, request: Request, db: Session = Depends(get_db)):
     url = db.query(models.URL).filter(models.URL.short_code == short_code).first()
@@ -52,7 +80,7 @@ def redirect(short_code: str, request: Request, db: Session = Depends(get_db)):
     
     if url.expires_at < datetime.datetime.now():
         raise HTTPException(status_code=410, detail="Expired URL")
-    
+        
     url.click_count += 1    
 
     click = models.Click(url_id = url.id, 
@@ -62,3 +90,45 @@ def redirect(short_code: str, request: Request, db: Session = Depends(get_db)):
     db.commit()
 
     return RedirectResponse(url=url.original_url, status_code=307)
+
+
+#Endpoint to register a new user
+@app.post('/register')
+def user_register(payload: models.UserCreate, db: Session = Depends(get_db)):
+    if db.query(models.User).filter(models.User.email == payload.email).first():
+        raise HTTPException(400, "User already exists.")
+    
+    hashed_password = auth.hash_password(payload.password)
+
+    new_user = models.User(
+        email=payload.email,
+        hashed_password = hashed_password)
+    
+    db.add(new_user)
+    db.commit()
+
+    return {"message": "User created succesfully."}
+
+
+#Endpoint to login
+#Swagger sends oauth2 form in the form of username and password to the login endpoint in order to generate jwt and store it.
+#So we need to use the OAuth2PasswordRequestForm and the keywords "username" and "password"
+@app.post('/login')
+def user_login(payload: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == payload.username).first()
+
+    if not user:
+        raise HTTPException(400, "Invalid email or password")
+
+    valid_user = auth.verify_password(payload.password, user.hashed_password)
+
+    if not valid_user:
+        raise HTTPException(401, "Unauthorised")
+    
+    jwt = auth.create_jwt({"sub": str(user.id)})
+    
+    return {
+        "access_token": jwt,
+        "token_type": "bearer"
+    }
+    
