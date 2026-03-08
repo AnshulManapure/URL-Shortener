@@ -11,13 +11,17 @@ import models
 import database
 import utils
 import auth
+import cache
 
 #Loading environment variables
 load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
+RATE_LIMIT = os.getenv("RATE_LIMIT")
+RATE_LIMIT_WINDOW = os.getenv("RATE_LIMIT_WINDOW")
 
+#Initialise FastAPI app
 app = FastAPI()
 
 #Initialise the database if empty
@@ -32,21 +36,30 @@ def get_db():
         db.close_all()
 
 #Define a function to get user on every API call
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login") #Get bearer token from user request
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login") #Get bearer token from user request everytime login endpoint is hit succesfully
 def get_current_user(token: str=Depends(oauth2_scheme), db: Session = Depends(get_db)):
     payload = jwt.decode(token=token, key=SECRET_KEY, algorithms=ALGORITHM)
     user = db.query(models.User).filter(models.User.id == payload.get("sub")).first()
-
     if not user:
-        raise HTTPException(401)
-    
+        raise HTTPException(401)    
     return user
 
 
 
 #Create endpoint to send long url and get short url
 @app.post('/shorten', response_model=models.URLResponse)
-def create_short_url(payload: models.URLCreate, request: Request, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def create_short_url(payload: models.URLCreate, request: Request, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):    
+    #Adding rate limiting through redis
+    cache_key = f"rate_limit:{current_user.id}"
+    count = cache.redis_client.get(cache_key)
+    if count == None:
+        cache.redis_client.set(name=cache_key, value=1, ex=RATE_LIMIT_WINDOW) #Initialises the key to 1 and sets expiry for 60s, so the counter is reset every 60s
+    elif int(count) >= int(RATE_LIMIT):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    else:
+        cache.redis_client.incr(name=cache_key, amount=1)
+
+    #Adding new url to db
     new_url = models.URL(original_url = str(payload.original_url),
                          user_id = current_user.id)
     db.add(new_url)
@@ -73,19 +86,30 @@ def create_short_url(payload: models.URLCreate, request: Request, db: Session = 
 #Endpoint to redirect
 @app.get('/{short_code}')
 def redirect(short_code: str, request: Request, db: Session = Depends(get_db)):
+
+    cache_key = f"url:{short_code}"
+    cache_url = cache.redis_client.get(cache_key)
+
+    if cache_url:
+        return RedirectResponse(url=cache_url, status_code=307)
+    
     url = db.query(models.URL).filter(models.URL.short_code == short_code).first()
 
     if not url:
         raise HTTPException(status_code=404, detail="URL not found")
     
-    if url.expires_at < datetime.datetime.now():
+    if url.expires_at and url.expires_at < datetime.datetime.now():
         raise HTTPException(status_code=410, detail="Expired URL")
-        
+    
+    #Store in redis cache
+    cache.redis_client.set(name=cache_key, value=url.original_url, ex=3600) #Cache entry expires in 3600s, i.e, 1 hour
+    
+    #Update click metrics
     url.click_count += 1    
 
     click = models.Click(url_id = url.id, 
-                         user_agent = request.headers.get('user-agent'),
-                         ip_address = request.client.host)
+                        user_agent = request.headers.get('user-agent'),
+                        ip_address = request.client.host)
     db.add(click)
     db.commit()
 
