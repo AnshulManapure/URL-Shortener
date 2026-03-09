@@ -1,11 +1,13 @@
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from jose import jwt 
 import datetime
 from dotenv import load_dotenv
 import os
+from redis.exceptions import RedisError
 
 import models
 import database
@@ -44,7 +46,14 @@ def get_current_user(token: str=Depends(oauth2_scheme), db: Session = Depends(ge
         raise HTTPException(401)    
     return user
 
-
+#Function to check if redis is up and available
+def check_redis():    
+    redis_available = True
+    try:
+        cache.redis_client.ping()
+    except RedisError:
+        redis_available = False
+    return redis_available
 
 #Create endpoint to send long url and get short url
 @app.post('/shorten', response_model=models.URLResponse)
@@ -86,9 +95,13 @@ def create_short_url(payload: models.URLCreate, request: Request, db: Session = 
 #Endpoint to redirect
 @app.get('/{short_code}')
 def redirect(short_code: str, request: Request, db: Session = Depends(get_db)):
-
     cache_key = f"url:{short_code}"
-    cache_url = cache.redis_client.get(cache_key)
+    redis_available = check_redis()
+    
+    if redis_available:
+        cache_url = cache.redis_client.get(cache_key)
+    else:
+        cache_url = None
 
     if cache_url:
         return RedirectResponse(url=cache_url, status_code=307)
@@ -102,7 +115,8 @@ def redirect(short_code: str, request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=410, detail="Expired URL")
     
     #Store in redis cache
-    cache.redis_client.set(name=cache_key, value=url.original_url, ex=3600) #Cache entry expires in 3600s, i.e, 1 hour
+    if redis_available:
+        cache.redis_client.set(name=cache_key, value=url.original_url, ex=3600) #Cache entry expires in 3600s, i.e, 1 hour
     
     #Update click metrics
     url.click_count += 1    
@@ -155,4 +169,42 @@ def user_login(payload: OAuth2PasswordRequestForm = Depends(), db: Session = Dep
         "access_token": jwt,
         "token_type": "bearer"
     }
+
+@app.get('/analytics/{short_code}')
+def get_analytics(short_code: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    url = db.query(models.URL).filter(models.URL.short_code == short_code).first()
+    if not url:
+        raise HTTPException(404, 'Invalid URL.')
     
+    if current_user.id != url.user_id:
+        raise HTTPException(403)
+
+    clicks_per_day = (        
+        db.query(
+            func.date(models.Click.timestamp),
+            func.count(models.Click.id)
+        )
+        .filter(models.Click.url_id == url.id)
+        .group_by(func.date(models.Click.timestamp))
+        .order_by(func.date(models.Click.timestamp))
+        .all()
+    )
+
+    #clicks_per_day is a list of rows. Each row contains a date and the amount of clicks on that day.
+    #We need to return each row in the format of the pydantic model defined in Models.py
+    metrics_list = []
+    for row in clicks_per_day:
+        metrics_list.append(
+            models.Metrics(
+                short_code=short_code,
+                original_url=url.original_url,
+                created_at=url.created_at,
+                expires_at=url.expires_at,
+                date=row[0],
+                total_clicks=row[1]                
+            )
+        )
+        
+    return metrics_list
+    
+

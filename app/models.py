@@ -87,4 +87,14 @@ class UserLogin(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str
     expiry: datetime.datetime
+
+class Metrics(BaseModel):
+    short_code: str
+    original_url: str
+    created_at: datetime.datetime
+    expires_at: Optional[datetime.datetime]
+    date: datetime.datetime
+    total_clicks: int
+
+
     
