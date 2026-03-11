@@ -93,7 +93,6 @@ class Metrics(BaseModel):
     original_url: str
     created_at: datetime.datetime
     expires_at: Optional[datetime.datetime]
-    date: datetime.datetime
     total_clicks: int
 
 
