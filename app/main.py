@@ -9,11 +9,11 @@ from dotenv import load_dotenv
 import os
 from redis.exceptions import RedisError
 
-import models
-import database
-import utils
-import auth
-import cache
+from app import models
+from app import database
+from app import utils
+from app import auth
+from app import cache
 
 #Loading environment variables
 load_dotenv()
@@ -35,7 +35,7 @@ def get_db():
     try:
         yield db
     finally:
-        db.close_all()
+        db.close()
 
 #Define a function to get user on every API call
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login") #Get bearer token from user request everytime login endpoint is hit succesfully
@@ -192,19 +192,18 @@ def get_analytics(short_code: str, db: Session = Depends(get_db), current_user: 
 
     #clicks_per_day is a list of rows. Each row contains a date and the amount of clicks on that day.
     #We need to return each row in the format of the pydantic model defined in Models.py
-    metrics_list = []
+    total_clicks = 0
     for row in clicks_per_day:
-        metrics_list.append(
-            models.Metrics(
-                short_code=short_code,
-                original_url=url.original_url,
-                created_at=url.created_at,
-                expires_at=url.expires_at,
-                date=row[0],
-                total_clicks=row[1]                
-            )
+        total_clicks += row[1]
+
+    metrics = models.Metrics(
+            short_code=short_code,
+            original_url=url.original_url,
+            created_at=url.created_at,
+            expires_at=url.expires_at,
+            total_clicks=total_clicks
         )
         
-    return metrics_list
+    return metrics
     
 
