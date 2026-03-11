@@ -14,7 +14,7 @@ load_dotenv()
 #Create a testing db
 POSTGRES_USER = os.getenv("POSTGRES_USER")
 POSTGRES_PASS = os.getenv("POSTGRES_PASSWORD")
-TEST_DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASS}@localhost:5432/URL_Shortener_Test"
+TEST_DATABASE_URL = os.getenv("POSTGRES_URL")
 
 engine = create_engine(TEST_DATABASE_URL)
 TestingSession = sessionmaker(bind=engine)

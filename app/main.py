@@ -81,7 +81,7 @@ def create_short_url(payload: models.URLCreate, request: Request, db: Session = 
     short_url = f"{request.base_url}{short_code}"
 
     if payload.expires_in_days:
-        new_url.expires_at = datetime.datetime.now() + datetime.timedelta(days=payload.expires_in_days)
+        new_url.expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=payload.expires_in_days)
     
     db.commit()
     
@@ -111,7 +111,7 @@ def redirect(short_code: str, request: Request, db: Session = Depends(get_db)):
     if not url:
         raise HTTPException(status_code=404, detail="URL not found")
     
-    if url.expires_at and url.expires_at < datetime.datetime.now():
+    if url.expires_at and url.expires_at < datetime.datetime.now(datetime.timezone.utc):
         raise HTTPException(status_code=410, detail="Expired URL")
     
     #Store in redis cache
